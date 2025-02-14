@@ -36,7 +36,7 @@ class BEVStableDiffusionPipelineOutput(BaseOutput):
     nsfw_content_detected: Optional[List[bool]]
 
 
-class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
+class StableDiffusionBEV_With_LiDAR_ControlNetPipeline(StableDiffusionControlNetPipeline):
     def __init__(
         self,
         vae: AutoencoderKL,
@@ -254,7 +254,7 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
-        do_classifier_free_guidance = guidance_scale > 1.0
+        do_classifier_free_guidance = guidance_scale > 1.0 # default is True
 
         ### BEV, check camera_param ###
         if camera_param is None:
@@ -267,7 +267,7 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         # if isinstance(self.controlnet, MultiControlNetModel) and isinstance(controlnet_conditioning_scale, float):
         #     controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(self.controlnet.nets)
 
-        # 3. Encode input prompt
+        # 3. Encode input prompt for the Language One
         # NOTE: here they use padding to 77, is this necessary?
         prompt_embeds = self._encode_prompt(
             prompt,
@@ -282,6 +282,8 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         # 4. Prepare image
         # NOTE: if image is not tensor, there will be several process.
         assert not self.control_image_processor.config.do_normalize, "Your controlnet should not normalize the control image."
+        
+        # just copy the image twice: Stanrge
         image = self.prepare_image(
             image=image,
             width=width,
@@ -293,6 +295,9 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             do_classifier_free_guidance=do_classifier_free_guidance,
             guess_mode=guess_mode,
         )  # (2 * b, c_26, 200, 200)
+        
+        
+        # here the defulat is the False, which means did not use the zero map as the unconditional stuff
         if use_zero_map_as_unconditional and do_classifier_free_guidance:
             # uncond in the front, cond in the tail
             _images = list(torch.chunk(image, 2))
@@ -314,12 +319,13 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             device,
             generator,
             latents,  # will use if not None, otherwise will generate
-        )  # (b, c, h/8, w/8) -> (bs, 4, 28, 50)
-        
+        )  # (b, c, h/8, w/8) -> (bs, 4, 28, 50) # here is still all consider the conditional situtation
+
+
         # consider the uncond situation
 
         # 7. Prepare extra step kwargs.
-        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta) # meaningless: did not consider that the current times
 
         ###### BEV: here we reconstruct each input format ######
         assert camera_param.shape[0] == batch_size, \
@@ -328,13 +334,15 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         latents = torch.stack([latents] * N_cam, dim=1)  # bs, 6, 4, 28, 50
         # prompt_embeds, no need for b, len, 768
         # image, no need for b, c, 200, 200
-        camera_param = camera_param.to(self.device)
+        camera_param = camera_param.to(self.device) # torch.Size([1, 6, 3, 7])
+    
         
-
         
+        
+        # OK, So I believe all the conidtional stuff begins at here
         if do_classifier_free_guidance and not guess_mode:
             # uncond in the front, cond in the tail
-            _images = list(torch.chunk(image, 2))
+            _images = list(torch.chunk(image, 2)) # split the images into 2 part
             kwargs_with_uncond = self.controlnet.add_uncond_to_kwargs(
                 camera_param=camera_param,
                 image=_images[0],  # 0 is for unconditional
@@ -346,6 +354,7 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             _images[0] = kwargs_with_uncond.pop("image")
             image = torch.cat(_images)
             bev_controlnet_kwargs = move_to(kwargs_with_uncond, self.device)
+        
         ###### BEV end ######
 
         # 8. Denoising loop

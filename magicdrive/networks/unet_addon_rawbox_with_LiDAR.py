@@ -646,18 +646,41 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
         if isinstance(module, (CrossAttnDownBlock2D, DownBlock2D)):
             module.gradient_checkpointing = value
 
+    # for the pipeline
     def add_uncond_to_kwargs(
-            self, camera_param, bboxes_3d_data: dict, image, max_len=None,
+            self, camera_param, 
+            bboxes_3d_data: dict, 
+            lidars_3d_data:dict,
+            image, max_len=None,
             **kwargs):
         # uncond in the front, cond in the tail
         batch_size, N_cam = camera_param.shape[:2]
         ret = dict()
 
+        # uncondition cam param
         ret['camera_param'] = torch.cat([
             self.uncond_cam_param([batch_size, N_cam]),
             camera_param,
         ])
-
+        
+        # to make the uncond lidar
+        if lidars_3d_data is None:
+            logging.warn(
+                "Your 'lidars_3d_data' should not be None. If this warning keeps "
+                "popping, please check your code.")
+            
+            ret["lidars_3d_data"] = None
+        else:
+            ret["lidars_3d_data"] = dict() 
+            for key in ['lidars', 'masks']:
+                # add zeros like bounding boxes
+                ret["lidars_3d_data"][key] = torch.cat([
+                    torch.zeros_like(lidars_3d_data[key]),
+                    lidars_3d_data[key],
+                ])
+            
+        
+        # how to make the uncond param
         if bboxes_3d_data is None:
             logging.warn(
                 "Your 'bboxes_3d_data' should not be None. If this warning keeps "
@@ -678,6 +701,7 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
         else:
             ret["bboxes_3d_data"] = dict()  # do not change the original dict
             for key in ["bboxes", "classes", "masks"]:
+                # add zeros like bounding boxes
                 ret["bboxes_3d_data"][key] = torch.cat([
                     torch.zeros_like(bboxes_3d_data[key]),
                     bboxes_3d_data[key],
@@ -794,8 +818,8 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             controlnet_cond = controlnet_cond.type(self.dtype)
             controlnet_cond = self._random_use_uncond_map(controlnet_cond)
         else:
-            uncond_mask = None
-
+            uncond_mask = None # defualt is the mask
+        
         '''3D Bounding Embeddings '''
         # 0.5. bbox embeddings
         # bboxes data should follow the format of (B, N_cam or 1, max_len, ...)
@@ -853,10 +877,9 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             ], dim=2) # [Batch_Size,NUMS_OF_CAMERRAS,dimensions, 768]
 
 
-        
+        # should consider the test time, since when test, there is both the uncond and the cond.
         if lidars_3d_data is not None:
             lidar_emb =  self.lidar_embedder(lidars_3d_data['lidars'][...,:3])
-
             encoder_hidden_states_with_cam = torch.cat([
                 encoder_hidden_states_with_cam, lidar_emb
             ], dim=2)

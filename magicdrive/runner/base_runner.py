@@ -60,6 +60,9 @@ class BaseRunner:
 
         
         self._set_dataset_loader()
+        
+        
+        
 
         # validator
         pipe_cls = load_module(cfg.model.pipe_module)
@@ -354,9 +357,13 @@ class BaseRunner:
 
         # val before train: do the validation first
         if self.cfg.runner.validation_before_run or self.cfg.validation_only:
+            
+            # first do the validation here 
             if self.accelerator.is_main_process:
                 self._validation(global_step)
+                
             self.accelerator.wait_for_everyone()
+            
             # if validation_only, exit
             if self.cfg.validation_only:
                 self.accelerator.end_training()
@@ -400,7 +407,9 @@ class BaseRunner:
                         )
                         self.accelerator.save_state(save_path)
                         logging.info(f"Saved state to {save_path}")
-
+                        
+                logging.info(f"current loss is {loss.detach().item()}")
+                
                 logs = {"loss": loss.detach().item()}
                 for lri, lr in enumerate(self.lr_scheduler.get_last_lr()):
                     logs[f"lr{lri}"] = lr

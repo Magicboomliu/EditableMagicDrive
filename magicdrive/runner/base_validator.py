@@ -62,7 +62,9 @@ class BaseValidator:
         logging.info("[BaseValidator] Running validation... ")
         controlnet.eval()  # important !!!
         unet.eval()
-
+        
+        
+        # build the pipeline
         pipeline = self.pipe_cls.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path,
             **self.pipe_param,
@@ -101,7 +103,8 @@ class BaseValidator:
             )
             # camera_emb = self._embed_camera(val_input["camera_param"])
             camera_param = val_input["camera_param"].to(weight_dtype)
-
+            
+            
             # let different prompts have the same random seed
             if self.cfg.seed is None:
                 generator = None

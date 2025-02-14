@@ -227,8 +227,8 @@ if __name__=="__main__":
     
     lidars =LiDARs['lidars'][...,:3]
     masks = LiDARs['masks']
-    # print(lidars.shape)
-    # quit()
+
+    lidars = lidars[0:1,:,:,:]
     lidars_check = lidars.reshape(-1,3)
     
     x_min,x_max,y_min,y_max,z_min,z_max = compute_percentile_mean(lidars_check)
