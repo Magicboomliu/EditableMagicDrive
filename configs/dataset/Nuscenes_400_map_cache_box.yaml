@@ -11,11 +11,6 @@ dataset:
       type: LoadMultiViewImageFromFiles
       to_float32: true
     -
-      type: LoadPointsFromFile
-      coord_type: "LIDAR"
-      load_dim: 5
-      use_dim: 5
-    -
       type: LoadAnnotations3D
       with_bbox_3d: true
       with_label_3d: true
@@ -73,7 +68,7 @@ dataset:
       type: Collect3D
       keys:  # keep as origin
         - img
-        - points
+        # - points
         - gt_bboxes_3d
         - gt_labels_3d
         - gt_masks_bev

@@ -10,6 +10,7 @@ def concat_6_views(imgs: Tuple[Image.Image, ...], oneline=False):
     return image
 
 
+# de-normalization for the diffusion
 def img_m11_to_01(img):
     return img * 0.5 + 0.5
 

@@ -22,6 +22,13 @@ import magicdrive.dataset.pipeline
 from magicdrive.misc.common import load_module
 
 
+import pickle
+def save_pickle_file_for_further_exploration(dict_data,saved_dict_name):
+    with open(saved_dict_name, "wb") as f:
+        pickle.dump(dict_data, f)
+
+
+
 def set_logger(global_rank, logdir):
     if global_rank == 0:  # already set for main process
         return
@@ -69,7 +76,7 @@ def main(cfg: DictConfig):
     # since our model has randomness to train the uncond embedding, we need this.
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.accelerator.gradient_accumulation_steps,
+        gradient_accumulation_steps=cfg.accelerator.gradient_accumulation_steps, # 1
         mixed_precision=cfg.accelerator.mixed_precision,
         log_with=cfg.accelerator.report_to,
         project_dir=cfg.log_root,
@@ -79,34 +86,34 @@ def main(cfg: DictConfig):
     set_seed(cfg.seed)
 
     # datasets
+    # How to build the dataset
+
+
     train_dataset = build_dataset(
         OmegaConf.to_container(cfg.dataset.data.train, resolve=True)
     )
     val_dataset = build_dataset(
         OmegaConf.to_container(cfg.dataset.data.val, resolve=True)
     )
-
-    # dict_keys(['img', 'points', 
-    # 'gt_bboxes_3d', 
-    # 'gt_labels_3d', 
-    # 'gt_masks_bev', 
-    # 'camera_intrinsics', 'lidar2ego', 
-    # 'lidar2camera', 'camera2lidar', 'lidar2image', 
-    # 'img_aug_matrix', 'metas'])
     
+    # for sample in train_dataset:
+    #     print(sample['points'].data.shape)
+    # cfg.use_lidar = False
 
-    # runnerL get the checkpoint path
+
+    # runner: here the default is None,we can change it into the one that betgins
     if cfg.resume_from_checkpoint and cfg.resume_from_checkpoint.endswith("/"):
         cfg.resume_from_checkpoint = cfg.resume_from_checkpoint[:-1]
+
+    # define which mode we are in, for different GPU traninig settings, like "DeBugs" or "8GPUs"
+    # get a runner instances
+    # default settings is the <class 'magicdrive.runner.multiview_runner.MultiviewRunner'>
+    runner_cls = load_module(cfg.model.runner_module)
     
-    # loaed the modules including the pipelines, dataloders and each compontents
-    runner_cls = load_module(cfg.model.runner_module) # magicdrive.runner.multiview_runner.MultiviewRunner
-    
-    # configurate the pipeline the training dataloder and the testing dataloader.
-    runner = runner_cls(cfg, accelerator, train_dataset, val_dataset)
-    runner.set_optimizer_scheduler()
-    runner.prepare_device()
-    
+    # initialized the runner with the current configs , accelerate settings and training/validation dataset.
+    runner = runner_cls(cfg, accelerator, train_dataset, val_dataset,cfg.use_lidar)
+    runner.set_optimizer_scheduler() # set the optimizer schedualr
+    runner.prepare_device() # prepared device put them on the GPUS for training.
 
 
     # tracker

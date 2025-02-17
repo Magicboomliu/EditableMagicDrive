@@ -25,13 +25,14 @@ from diffusers.models.unet_2d_condition import UNet2DConditionModel
 from diffusers.models.controlnet import zero_module
 
 from .embedder import get_embedder
+
 from .output_cls import BEVControlNetOutput
 from .map_embedder import BEVControlNetConditioningEmbedding
 from ..misc.common import load_module
 
 import pickle
-
 from .lidar_encode_network import PointPillars
+from .instance_lidar_embedder import ContinuousLiDARWithTextEmbedding
 
 
 def save_dict_into_pickle(filename,data_dict):
@@ -140,6 +141,14 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             padding=conv_in_padding,
         )
 
+        self.lidar_embedder_op =ContinuousLiDARWithTextEmbedding(lidar_per_instance=100,
+                                        embedder_num_freq=4,
+                                        proj_dims=[1280, 1024, 1024, 768],
+                                        minmax_normalize=True,
+                                        use_text_encoder_init=True)
+
+
+
         # time
         time_embed_dim = block_out_channels[0] * 4
 
@@ -215,13 +224,15 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             self.uncond_map = None
             
         
-        # LiDAR Points embedder
-        voxel_size = [0.16, 0.16, 4.0]
-        point_cloud_range = [-50, -50, -5, 50, 50, 3]
-        max_points_per_voxel = 100
-        max_voxels = 12000
-        out_channels = 768
-        self.lidar_embedder = PointPillars(voxel_size, point_cloud_range, max_points_per_voxel, max_voxels, out_channels)
+        # # LiDAR Points embedder
+        # voxel_size = [0.16, 0.16, 4.0]
+
+        # point_cloud_range =  [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+        # # point_cloud_range = [-50, -50, -5, 50, 50, 3]
+        # max_points_per_voxel = 100
+        # max_voxels = 12000
+        # out_channels = 768
+        # self.lidar_embedder = PointPillars(voxel_size, point_cloud_range, max_points_per_voxel, max_voxels, out_channels)
         
             
     
@@ -774,9 +785,9 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
         
         # dict_keys(['bboxes', 'classes', 'masks'])
         # dict_keys(['lidars', 'masks'])
-        
-        
-        
+
+
+
         # check channel order
         channel_order = self.config.controlnet_conditioning_channel_order # rgb        
         if channel_order == "rgb":
@@ -788,9 +799,7 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             raise ValueError(
                 f"unknown `controlnet_conditioning_channel_order`: {channel_order}"
             )
-
-        # prepare attention_mask
-
+        
         # attention mask defualt is the None        
         if attention_mask is not None:
             attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
@@ -807,8 +816,6 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             encoder_hidden_states, camera_emb
         )
         
-        # print(encoder_hidden_states_with_cam.shape)
-        # quit()
         
         # we may drop the condition during training, but not drop controlnet
         if (self.drop_cond_ratio > 0.0 and self.training):
@@ -825,7 +832,6 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
         # bboxes data should follow the format of (B, N_cam or 1, max_len, ...)
         # for each view
         if bboxes_3d_data is not None:
-            
             bbox_embedder_kwargs = {}
             # bboxes_3d_data 存储 3D 目标框数据（例如 bboxes, masks, labels）
             for k, v in bboxes_3d_data.items():
@@ -834,7 +840,6 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             # random dropout 如果目标框丢弃了，对应的相机信息也要丢弃。
             if self.drop_cam_with_box and uncond_mask is not None:
                 _, n_box = bboxes_3d_data["bboxes"].shape[:2] #[B,6,N,8,3]
-                
                 # shared bounding boxes
                 if n_box != N_cam:
                     assert n_box == 1, "either N_cam or 1."
@@ -848,16 +853,13 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
                 masks = bbox_embedder_kwargs['masks']
                 # uncond_mask > 0 的部分表示需要被去除的目标框。
                 masks[uncond_mask > 0] = 0
-                
             # original flow
             b_box, n_box = bbox_embedder_kwargs["bboxes"].shape[:2] #3, 6
-   
             for k in bboxes_3d_data.keys():
                 bbox_embedder_kwargs[k] = rearrange(
                     bbox_embedder_kwargs[k], 'b n ... -> (b n) ...')
             
-            # bbox embeddinger
-            
+            # bbox embeddinger [batch_size*6,num_of_boxes,768]
             bbox_emb = self.bbox_embedder(**bbox_embedder_kwargs)
             if n_box != N_cam:
                 # n_box should be 1: all views share the same set of bboxes, we repeat
@@ -867,9 +869,7 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
                 bbox_emb = rearrange(bbox_emb, '(b n) ... -> b n ...', n=N_cam)
             
             # 3D Bounding Boxes Embeddings
-            
             # print(bbox_emb.shape) #[Batch_Size, NUM_of_Cameras,NUM_OF_MAX_BOUNDING_BOX, DIMENSION]
-        
             # print(encoder_hidden_states_with_cam.shape) #[Batch_Size,NUM_OF_CAMERAS,34,768]
             
             encoder_hidden_states_with_cam = torch.cat([
@@ -877,14 +877,64 @@ class BEVControlNetModelWithLiDAR(ModelMixin, ConfigMixin):
             ], dim=2) # [Batch_Size,NUMS_OF_CAMERRAS,dimensions, 768]
 
 
-        # should consider the test time, since when test, there is both the uncond and the cond.
-        if lidars_3d_data is not None:
-            lidar_emb =  self.lidar_embedder(lidars_3d_data['lidars'][...,:3])
+        # print(encoder_hidden_states_with_cam.shape) # encoder hidden state with cams #[2,6,106,768]
+        # quit()
+        if  lidars_3d_data is not None:
+            lidar_embedder_kwargs = {}
+
+            # 1. 克隆 lidar_3d 数据
+            for k, v in lidars_3d_data.items():
+                lidar_embedder_kwargs[k] = v.clone()
+
+            # 2. 处理 drop_cam_with_box 逻辑
+            if self.drop_cam_with_box and uncond_mask is not None:
+                _, n_box = lidars_3d_data["lidars"].shape[:2]  # [B, N_cam, N, 100, 3]
+                
+                # 如果目标框数量 n_box != N_cam，需要扩展
+                if n_box != N_cam:
+                    assert n_box == 1, "either N_cam or 1."
+                    for k in lidars_3d_data.keys():
+                        ori_v = rearrange(lidar_embedder_kwargs[k], 'b n ... -> (b n) ...')  # (B, 1, ...) -> (B, ...)
+                        new_v = repeat(ori_v, 'b ... -> b n ...', n=N_cam)  # 复制 N_cam 份
+                        lidar_embedder_kwargs[k] = new_v
+
+                # 3. 丢弃无效目标框
+                masks = lidar_embedder_kwargs['mask']  # (B, N_cam, N)
+                masks[uncond_mask > 0] = 0  # 置 0 无效目标框
+
+            # 4. 变换数据格式： (B, N_cam, N, 100, 3) -> (B * N_cam, N, 100, 3)
+            for k in lidars_3d_data.keys():
+                lidar_embedder_kwargs[k] = rearrange(lidar_embedder_kwargs[k], 'b n ... -> (b n) ...')
+
+            lidar_emb = self.lidar_embedder_op(**lidar_embedder_kwargs)
+            if n_box != N_cam:
+                # n_box should be 1: all views share the same set of bboxes, we repeat
+                lidar_emb = repeat(lidar_emb, 'b ... -> b n ...', n=N_cam)
+            else:
+                # each view already has its set of bboxes
+                lidar_emb = rearrange(lidar_emb, '(b n) ... -> b n ...', n=N_cam)
+
+
             encoder_hidden_states_with_cam = torch.cat([
                 encoder_hidden_states_with_cam, lidar_emb
-            ], dim=2)
-    
+            ], dim=2) # [Batch_Size,NUMS_OF_CAMERRAS,dimensions, 768]
         
+        # print(bbox_embedder_kwargs.keys())
+        # print(bbox_embedder_kwargs["bboxes"].shape) # torch.Size([18, 45, 8, 3])
+        # print(bbox_embedder_kwargs["classes"].shape) # torch.Size([18, 45])
+        # print(bbox_embedder_kwargs["masks"].shape) # torch.Size([18, 45])
+        # print(lidar_embedder_kwargs.keys())
+        # print(lidar_embedder_kwargs['lidars'].shape) # torch.Size([18, 45, 100, 3])
+        # print(lidar_embedder_kwargs['masks'].shape) # torch.Size([18, 45])
+        # quit()
+        # should consider the test time, since when test, there is both the uncond and the cond.
+        # '''LiDARs Embeddings '''
+        # if lidars_3d_data is not None:
+        #     lidar_emb =  self.lidar_embedder(lidars_3d_data['lidars'][...,:3])
+        #     encoder_hidden_states_with_cam = torch.cat([
+        #         encoder_hidden_states_with_cam, lidar_emb
+        #     ], dim=2)
+    
 
         # 1. time
         timesteps = timestep

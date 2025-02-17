@@ -34,6 +34,16 @@ class GatedConnector(nn.Module):
 
 class BasicMultiviewTransformerBlock(BasicTransformerBlock):
 
+    '''
+    BasicMultiviewTransformerBlock 是 基于 BasicTransformerBlock 进行多视角
+    （Multiview）增强的 Transformer 块。它的目标是：
+    添加额外的 Cross-Attention 机制，使得不同视角的 latent 可以互相影响。
+    利用相机关系 neighboring_view_pair，让每个视角可以参考邻近的相机特征进行信息融合。
+    增加 GatedConnector 机制，控制跨视角特征的贡献，避免直接覆盖掉 Self-Attention 结果。
+    支持不同的 zero_module_type，如 zero_linear 或 gated 方式来控制 Cross-Attention 输出。
+    
+    '''
+
     def __init__(
         self,
         dim: int,
@@ -63,6 +73,7 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
 
         self.neighboring_view_pair = _ensure_kv_is_int(neighboring_view_pair)
         self.neighboring_attn_type = neighboring_attn_type
+        
         # multiview attention
         self.norm4 = (
             AdaLayerNorm(dim, num_embeds_ada_norm)
@@ -150,9 +161,17 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
         timestep=None,
         cross_attention_kwargs=None,
         class_labels=None,
-    ):
+    ):  
+        '''
+        hidden_sates:[B * N, L, C]
+        B is the batch size, 
+        N is the number of the camears
+        L is the nums of tokens
+        C is the dimensions of each token
+        '''
+
         # Notice that normalization is always applied before the real computation in the following blocks.
-        # 1. Self-Attention
+        # 1. Self-Attention: Inside each view, among the 1400(L) tokens
         if self.use_ada_layer_norm:
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
@@ -163,6 +182,7 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
             norm_hidden_states = self.norm1(hidden_states)
 
         cross_attention_kwargs = cross_attention_kwargs if cross_attention_kwargs is not None else {}
+        
         attn_output = self.attn1(
             norm_hidden_states, encoder_hidden_states=encoder_hidden_states
             if self.only_cross_attention else None,
@@ -171,7 +191,7 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
             attn_output = gate_msa.unsqueeze(1) * attn_output
         hidden_states = attn_output + hidden_states
 
-        # 2. Cross-Attention
+        # 2. Cross-Attention: Between the hidden states and prompt_embedds
         if self.attn2 is not None:
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep)
@@ -186,7 +206,8 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
                 **cross_attention_kwargs,
             )
             hidden_states = attn_output + hidden_states
-
+        
+        # This is very Important: Multi-View Attentions
         # multi-view cross attention
         norm_hidden_states = (
             self.norm4(hidden_states, timestep) if self.use_ada_layer_norm else
@@ -234,6 +255,7 @@ class BasicMultiviewTransformerBlock(BasicTransformerBlock):
             ff_output = gate_mlp.unsqueeze(1) * ff_output
 
         hidden_states = ff_output + hidden_states
+        
 
         return hidden_states
 

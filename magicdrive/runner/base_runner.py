@@ -23,6 +23,10 @@ from transformers.utils import ContextManagers
 from accelerate import Accelerator
 
 from magicdrive.dataset.utils import collate_fn
+
+from magicdrive.dataset.utils_with_lidar import collate_fn_with_lidar
+
+
 from magicdrive.runner.base_validator import BaseValidator
 from magicdrive.runner.utils import (
     prepare_ckpt,
@@ -37,9 +41,12 @@ from magicdrive.misc.common import (
 
 
 class BaseRunner:
-    def __init__(self, cfg, accelerator, train_set, val_set) -> None:
+    def __init__(self, cfg, accelerator, train_set, val_set,use_lidar) -> None:
         self.cfg = cfg
         self.accelerator: Accelerator = accelerator
+
+        self.use_lidar = use_lidar
+
         # Load models and create wrapper for stable diffusion
         # workaround for ZeRO-3, see:
         # https://github.com/huggingface/diffusers/blob/3ebbaf7c96801271f9e6c21400033b6aa5ffcf29/examples/text_to_image/train_text_to_image.py#L571
@@ -57,15 +64,24 @@ class BaseRunner:
         self.train_dataloader = None
         self.val_dataset = val_set
         self.val_dataloader = None
-
-        
         self._set_dataset_loader()
-        
-        
-        
+
+
+        # for sample in self.train_dataloader:
+        #     # print(sample.keys())
+        #     print(sample['kwargs']["bboxes_3d_data"]["bboxes"].shape) # torch.Size([3, 6, 37, 8, 3])
+        #     print(sample['kwargs']["lidars_3d_data"]["lidars"].shape) # torch.Size([3, 6, 37, 100, 3])
+        #     quit()
+
+
+
+        # quit()
+
 
         # validator
         pipe_cls = load_module(cfg.model.pipe_module)
+
+        # default logging is on the tensorboard logs
         self.validator = BaseValidator(
             self.cfg,
             self.val_dataset,
@@ -83,6 +99,7 @@ class BaseRunner:
         self.num_update_steps_per_epoch = None  # based on train loader
         self.optimizer = None
         self.lr_scheduler = None
+
 
     def _init_fixed_models(self, cfg):
         # fmt: off
@@ -120,70 +137,56 @@ class BaseRunner:
 
     def _set_dataset_loader(self):
         # dataset
-        
         collate_fn_param = {
-            "tokenizer": self.tokenizer, # CLIPTokenizer
-            "template": self.cfg.dataset.template, #'A driving scene image at {location}. {description}.'
-            "bbox_mode": self.cfg.model.bbox_mode, # all-xyz
-            "bbox_view_shared": self.cfg.model.bbox_view_shared, # False by default
-            "bbox_drop_ratio": self.cfg.runner.bbox_drop_ratio,  # 0
-            "bbox_add_ratio": self.cfg.runner.bbox_add_ratio,   # 0.1
-            "bbox_add_num": self.cfg.runner.bbox_add_num,      # 3
+            "tokenizer": self.tokenizer,
+            "template": self.cfg.dataset.template,
+            "bbox_mode": self.cfg.model.bbox_mode,
+            "bbox_view_shared": self.cfg.model.bbox_view_shared,
+            "bbox_drop_ratio": self.cfg.runner.bbox_drop_ratio,
+            "bbox_add_ratio": self.cfg.runner.bbox_add_ratio,
+            "bbox_add_num": self.cfg.runner.bbox_add_num,
         }
-        
-
 
         if self.train_dataset is not None:
-            self.train_dataloader = torch.utils.data.DataLoader(
-                self.train_dataset, shuffle=True,
-                collate_fn=partial(
-                    collate_fn, is_train=True, **collate_fn_param),
-                batch_size=self.cfg.runner.train_batch_size,
-                num_workers=self.cfg.runner.num_workers, pin_memory=True,
-                prefetch_factor=self.cfg.runner.prefetch_factor,
-                persistent_workers=True,
-            )
-            
-        # for sample in self.train_dataloader:
-        #     print(sample['pixel_values'].shape) #[Batch_Size, 6,3,H,W]
-        #     print(sample.keys()) # dict_keys(['bev_map_with_aux', 'camera_param', 'kwargs', 'pixel_values', 'captions', 'input_ids', 'uncond_ids', 'meta_data'])
-        #     print(sample['kwargs'].keys()) # dict_keys(['bboxes_3d_data', 'lidars_3d_data'])
-        #     print(sample['kwargs']['bboxes_3d_data'].keys()) # dict_keys(['bboxes', 'classes', 'masks'])
-        #     print(sample['kwargs']['lidars_3d_data'].keys()) # dict_keys(['lidars'])
-        #     print(sample['kwargs']['bboxes_3d_data']['bboxes'].shape) # torch.Size([3, 6, 42, 8, 3])
-        #     print(sample['kwargs']['lidars_3d_data']['lidars'].shape) # torch.Size([3, 6, 11914, 5])
-            
-        #     # dict_keys(['bev_map_with_aux', 'camera_param', 
-        #     #       'kwargs', 'pixel_values', 'captions', 
-        #     #           'input_ids', 'uncond_ids', 'meta_data'])
-        #     quit()
-        
-            
-            
+            if self.use_lidar:
+                self.train_dataloader = torch.utils.data.DataLoader(
+                    self.train_dataset, shuffle=True,
+                    collate_fn=partial(
+                        collate_fn_with_lidar, is_train=True, **collate_fn_param),
+                    batch_size=self.cfg.runner.train_batch_size,
+                    num_workers=self.cfg.runner.num_workers, pin_memory=True,
+                    prefetch_factor=self.cfg.runner.prefetch_factor,
+                    persistent_workers=True,
+                )
+            else:
+                self.train_dataloader = torch.utils.data.DataLoader(
+                    self.train_dataset, shuffle=True,
+                    collate_fn=partial(
+                        collate_fn, is_train=True, **collate_fn_param),
+                    batch_size=self.cfg.runner.train_batch_size,
+                    num_workers=self.cfg.runner.num_workers, pin_memory=True,
+                    prefetch_factor=self.cfg.runner.prefetch_factor,
+                    persistent_workers=True,
+                )
         if self.val_dataset is not None:
-            self.val_dataloader = torch.utils.data.DataLoader(
-                self.val_dataset, shuffle=False,
-                collate_fn=partial(
-                    collate_fn, is_train=False, **collate_fn_param),
-                batch_size=self.cfg.runner.validation_batch_size,
-                num_workers=self.cfg.runner.num_workers,
-                prefetch_factor=self.cfg.runner.prefetch_factor,
-            )
-
-        # for sample in self.val_dataloader:
-        #     print(sample['pixel_values'].shape) #[Batch_Size, 6,3,H,W]
-        #     print(sample.keys()) # dict_keys(['bev_map_with_aux', 'camera_param', 'kwargs', 'pixel_values', 'captions', 'input_ids', 'uncond_ids', 'meta_data'])
-        #     print(sample['kwargs'].keys()) # dict_keys(['bboxes_3d_data', 'lidars_3d_data'])
-        #     print(sample['kwargs']['bboxes_3d_data'].keys()) # dict_keys(['bboxes', 'classes', 'masks'])
-        #     print(sample['kwargs']['lidars_3d_data'].keys()) # dict_keys(['lidars'])
-        #     print(sample['kwargs']['bboxes_3d_data']['bboxes'].shape) # torch.Size([3, 6, 42, 8, 3])
-        #     print(sample['kwargs']['lidars_3d_data']['lidars'].shape) # torch.Size([3, 6, 11914, 5])
-            
-        #     # dict_keys(['bev_map_with_aux', 'camera_param', 
-        #     #       'kwargs', 'pixel_values', 'captions', 
-        #     #           'input_ids', 'uncond_ids', 'meta_data'])
-        #     quit()
-        
+            if self.use_lidar:
+                self.val_dataloader = torch.utils.data.DataLoader(
+                    self.val_dataset, shuffle=False,
+                    collate_fn=partial(
+                        collate_fn_with_lidar, is_train=False, **collate_fn_param),
+                    batch_size=self.cfg.runner.validation_batch_size,
+                    num_workers=self.cfg.runner.num_workers,
+                    prefetch_factor=self.cfg.runner.prefetch_factor,
+                )
+            else:
+                self.val_dataloader = torch.utils.data.DataLoader(
+                    self.val_dataset, shuffle=False,
+                    collate_fn=partial(
+                        collate_fn, is_train=False, **collate_fn_param),
+                    batch_size=self.cfg.runner.validation_batch_size,
+                    num_workers=self.cfg.runner.num_workers,
+                    prefetch_factor=self.cfg.runner.prefetch_factor,
+                )
 
     def _set_model_trainable_state(self, train=True):
         # set trainable status
@@ -355,15 +358,11 @@ class BaseRunner:
         else:
             initial_global_step = 0
 
-        # val before train: do the validation first
+        # val before train
         if self.cfg.runner.validation_before_run or self.cfg.validation_only:
-            
-            # first do the validation here 
             if self.accelerator.is_main_process:
                 self._validation(global_step)
-                
             self.accelerator.wait_for_everyone()
-            
             # if validation_only, exit
             if self.cfg.validation_only:
                 self.accelerator.end_training()
@@ -383,9 +382,9 @@ class BaseRunner:
         logging.info(
             f"Starting from epoch {first_epoch} to {self.cfg.runner.num_train_epochs}")
         
-        
         for epoch in range(first_epoch, self.cfg.runner.num_train_epochs):
             for step, batch in enumerate(self.train_dataloader):
+                # main function here, train one iteration
                 loss = self._train_one_stop(batch)
                 if not loss.isfinite():
                     raise RuntimeError('Your loss is NaN.')
@@ -407,10 +406,11 @@ class BaseRunner:
                         )
                         self.accelerator.save_state(save_path)
                         logging.info(f"Saved state to {save_path}")
-                        
-                logging.info(f"current loss is {loss.detach().item()}")
-                
+
                 logs = {"loss": loss.detach().item()}
+                logging.info("current loss is {}, Iterations {} inside Epoch {}/{}".format(loss.detach().item(),
+                step,epoch,len(self.train_dataloader)))
+
                 for lri, lr in enumerate(self.lr_scheduler.get_last_lr()):
                     logs[f"lr{lri}"] = lr
                 progress_bar.set_postfix(refresh=False, **logs)

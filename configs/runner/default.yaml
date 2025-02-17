@@ -4,7 +4,7 @@ bbox_add_ratio: 0
 bbox_add_num: 3
 
 num_train_epochs: 100
-train_batch_size: 3
+train_batch_size: 8
 max_train_steps: null  # if null, will be overwrite by runner
 
 num_workers: 8
@@ -31,7 +31,7 @@ adam_epsilon: 1e-08
 # 1 gpu -> 9377 batches per epoch
 # 8 gpus -> 1172 batches per epoch
 # 32 gpus -> 293 batches per epoch
-learning_rate: 8e-5
+learning_rate: 2e-4
 lr_scheduler: cosine
 gradient_accumulation_steps: 1
 lr_num_cycles: 1
@@ -45,7 +45,8 @@ save_model_per_epoch: null
 
 # validation
 validation_before_run: false
-validation_index: [204, 912, 1828, 2253, 4467, 5543]
+# validation_index: [204, 912, 1828, 2253, 4467, 5543]
+validation_index: [10, 20, 30, 40, 50, 100]
 validation_times: 4
 validation_batch_size: 1
 validation_show_box: false

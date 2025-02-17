@@ -2,7 +2,7 @@ defaults:
   - config
   - _self_
 
-log_root_prefix: ./magicdrive-log/test
+log_root_prefix: ./magicdrive-log/test/vanilla_version_official_release
 
 runner:
   validation_batch_size: 4

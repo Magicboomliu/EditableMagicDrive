@@ -27,6 +27,49 @@ from magicdrive.runner.utils import (
 from magicdrive.misc.common import load_module
 
 
+# FIXME : Just Try for FUN
+def random_remove_the_3D_bounding_box_prompt_infos(val_input):
+    
+
+
+    ''' This is Control for the Diffusion Models' Generation'''
+    # this is for control the diffusion models' generataion
+    bboxes_3d = val_input['kwargs']['bboxes_3d_data']['bboxes'] #[Batch_Size,6,N,8,3]
+    bboxes_cls = val_input['kwargs']['bboxes_3d_data']['classes'] # [Batch_Size,6,N]
+    bboxes_masks =  val_input['kwargs']['bboxes_3d_data']['masks'] # [Batch_Size,6,N]
+    B, V, N, _, _ = bboxes_3d.shape  # B: batch, V: views, N: num of instances
+    # Randomly select indices for half of the instances
+    half_N = N // 2
+    selected_indices = torch.randperm(N)[:half_N]
+    # Apply the selection to keep only the chosen instances
+    bboxes_filtered = bboxes_3d[:, :, selected_indices, :, :]
+    classes_filtered = bboxes_cls[:, :, selected_indices]
+    masks_filtered = bboxes_masks[:, :, selected_indices]
+    val_input['kwargs']['bboxes_3d_data']['bboxes'] = bboxes_filtered
+    val_input['kwargs']['bboxes_3d_data']['classes'] = classes_filtered
+    val_input['kwargs']['bboxes_3d_data']['masks'] =  masks_filtered
+
+
+    # ''' This is Control for the Final Visualzations'''
+    # print(val_input['meta_data'].keys())
+    # # list length is 4
+    # print(val_input['meta_data']['gt_bboxes_3d'][0].data.shape)
+    # print(val_input['meta_data']['gt_labels_3d'].shape)
+    # print(val_input['meta_data']['camera_intrinsics'].shape)
+    # print(val_input['meta_data'][ 'lidar2camera'].shape)
+    # print(val_input['meta_data']['camera2lidar'].shape)
+    # print(val_input['meta_data']['img_aug_matrix'].shape)
+    # print(val_input['meta_data']['metas'].shape)
+    # quit()
+
+
+    return val_input
+
+
+def random_additional_the_3d_bounding_box_prompt_infos(val_input):
+    pass
+
+
 def insert_pipeline_item(cfg: DictConfig, search_type, item=None) -> None:
     if item is None:
         return
@@ -95,9 +138,14 @@ def build_pipe(cfg, device):
     weight_dtype = torch.float16
     if cfg.resume_from_checkpoint.endswith("/"):
         cfg.resume_from_checkpoint = cfg.resume_from_checkpoint[:-1]
+    
+    # 这个说所有的pipeline里面需要用到网络参数
     pipe_param = {}
 
-    model_cls = load_module(cfg.model.model_module)
+    #在这里声明一个新的BEVControlNet Model Network Definaitions
+    model_cls = load_module(cfg.model.model_module) # magicdrive.networks.unet_addon_rawbox.BEVControlNetModel
+    
+    # 加载controlent 的预训练权重
     controlnet_path = os.path.join(
         cfg.resume_from_checkpoint, cfg.model.controlnet_dir)
     logging.info(f"Loading controlnet from {controlnet_path} with {model_cls}")
@@ -106,7 +154,10 @@ def build_pipe(cfg, device):
     controlnet.eval()  # from_pretrained will set to eval mode by default
     pipe_param["controlnet"] = controlnet
 
+    # 加载UNet权重
     if hasattr(cfg.model, "unet_module"):
+        # loaded the multi-view cross-attention UNet Model
+        # <class 'magicdrive.networks.unet_2d_condition_multiview.UNet2DConditionModelMultiview'>
         unet_cls = load_module(cfg.model.unet_module)
         unet_path = os.path.join(cfg.resume_from_checkpoint, cfg.model.unet_dir)
         logging.info(f"Loading unet from {unet_path} with {unet_cls}")
@@ -115,6 +166,9 @@ def build_pipe(cfg, device):
         unet.eval()
         pipe_param["unet"] = unet
 
+    # Loading the Pipeline: magicdrive.pipeline.pipeline_bev_controlnet.StableDiffusionBEVControlNetPipeline
+
+    #
     pipe_cls = load_module(cfg.model.pipe_module)
     logging.info(f"Build pipeline with {pipe_cls}")
     pipe = pipe_cls.from_pretrained(
@@ -142,16 +196,17 @@ def prepare_all(cfg, device='cuda', need_loader=True):
     assert cfg.resume_from_checkpoint is not None, "Please set model to load"
     setup_logger_seed(cfg)
 
-    #### model ####
+    #### loading  the sub-part models including the controlnet and the unet,
+    # Then building a pipeline based othis ####
     pipe, weight_dtype = build_pipe(cfg, device)
     update_progress_bar_config(pipe, leave=False)
 
     if not need_loader:
         return pipe, weight_dtype
-
+    
     #### datasets ####
-
     if cfg.runner.validation_index == "demo":
+
         val_dataset = FolderSetWrapper("demo/data")
     else:
         val_dataset = build_dataset(
@@ -160,6 +215,7 @@ def prepare_all(cfg, device='cuda', need_loader=True):
         if cfg.runner.validation_index != "all":
             val_dataset = ListSetWrapper(
                 val_dataset, cfg.runner.validation_index)
+    
 
     #### dataloader ####
     collate_fn_param = {
@@ -222,6 +278,7 @@ def run_one_batch_pipe(
         generator = None
     else:
         if global_generator is not None:
+            # default is False.
             if cfg.fix_seed_within_batch:
                 generator = []
                 for _ in range(batch_size):
@@ -237,7 +294,12 @@ def run_one_batch_pipe(
             else:
                 generator = torch.manual_seed(cfg.seed)
 
+    # 声明一个空的的generated images list
+    # default validation times is 
     gen_imgs_list = [[] for _ in range(batch_size)]
+
+    # Why we need to inference by 4 Times?
+    # here the height is 224, and the width is 440
     for ti in range(cfg.runner.validation_times):
         image: BEVStableDiffusionPipelineOutput = pipe(
             prompt=captions,
@@ -268,23 +330,34 @@ def run_one_batch(cfg, pipe, val_input, weight_dtype, global_generator=None,
         List[List[Tuple[Image.Image]]]: generated images list, can be []
         if 2-dim: B, views; if 3-dim: B, Times, views
     """
-    bs = len(val_input['meta_data']['metas'])
+    bs = len(val_input['meta_data']['metas']) # defualt is 4
+
+    # # FIXME Here: Just for Exploration.
+    # val_input = random_remove_the_3D_bounding_box_prompt_infos((val_input))
+
 
     # TODO: not sure what to do with filenames
     # image_names = [val_input['meta_data']['metas'][i].data['filename']
     #                for i in range(bs)]
     logging.debug(f"Caption: {val_input['captions']}")
 
-    # map
-    map_imgs = []
+    # map: Here is the Bev Map for saving maybe, in my guenss
+    map_imgs = [] # the numbers should be the batch images
+    # here is travsal with the batch size
     for bev_map in val_input["bev_map_with_aux"]:
+        # input bev map shape should be [8,H,W], here the 8 is the numbers of 
+        # background images
         map_img_np = visualize_map(cfg, bev_map, target_size=map_size)
         map_imgs.append(Image.fromarray(map_img_np))
 
     # ori
-    ori_imgs = [None for bi in range(bs)]
-    ori_imgs_with_box = [None for bi in range(bs)]
+    ori_imgs = [None for bi in range(bs)] # here shold be PlaceHolder for the Images
+    ori_imgs_with_box = [None for bi in range(bs)]# [batch_size,6,3,H,W]
+
+
     if val_input["pixel_values"] is not None:
+
+        # get each view images
         ori_imgs = [
             [to_pil_image(img_m11_to_01(val_input["pixel_values"][bi][i]))
              for i in range(6)] for bi in range(bs)
@@ -297,13 +370,20 @@ def run_one_batch(cfg, pipe, val_input, weight_dtype, global_generator=None,
             ]
 
     # camera_emb = self._embed_camera(val_input["camera_param"])
-    camera_param = val_input["camera_param"].to(weight_dtype)
+    camera_param = val_input["camera_param"].to(weight_dtype) #[batch_size,6,3,7]
+
+    # # FIXME
+    # val_input['captions'][0] = "A driving scene image at boston-seaport,Snow, Parked trucks, parked cars, avoid parked truck, ped, turn right."
 
     # 3-dim list: B, Times, views
     gen_imgs_list = run_one_batch_pipe_func(
-        cfg, pipe, val_input['pixel_values'], val_input['captions'],
-        val_input['bev_map_with_aux'], camera_param, val_input['kwargs'],
+        cfg, pipe, val_input['pixel_values'], 
+        val_input['captions'],
+        val_input['bev_map_with_aux'], 
+        camera_param, 
+        val_input['kwargs'],
         global_generator=global_generator)
+
 
     # save gen with box
     gen_imgs_wb_list = []

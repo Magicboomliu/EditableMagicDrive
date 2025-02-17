@@ -1,0 +1,38 @@
+defaults:
+  - _self_
+  - model: SDV1.5mv_rawbox_with_lidar
+  - dataset: Nuscenes_map_cache_box_small_with_instance_lidar
+  - accelerator: default
+  - runner: default
+
+
+task_id: "0.0.0"
+
+
+projname: ${model.name}
+hydra:
+  run:
+    dir: ${log_root_prefix}/${projname}_${now:%Y-%m-%d}_${now:%H-%M}_${task_id}
+  output_subdir: hydra
+
+try_run: false
+debug: false
+log_root: ./debug_pretrained_and_logs
+init_method: env://
+seed: 42
+fix_seed_within_batch: false
+
+resume_from_checkpoint: null
+resume_reset_scheduler: false
+validation_only: false
+
+log_root_prefix: ./magicdrive-log/debug/magicdrive_simple_lidar_version
+
+runner:
+  validation_batch_size: 4
+  validation_index: [10, 20, 30, 40, 50, 100]
+
+resume_on_exists: false
+show_box: true
+
+fix_seed_for_every_generation: False

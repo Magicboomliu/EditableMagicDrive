@@ -76,7 +76,6 @@ def save_key_in_h5(h5: h5py.File, key_dtype, token, data):
 def main(cfg: DictConfig):
     logging.getLogger("shapely.geos").setLevel(logging.WARN)
     set_seed(cfg.seed)
-
     # amend cfg for data
     cfg.dataset.train_pipeline[-1]["keys"].append("gt_masks_bev_static")
     cfg.dataset.train_pipeline[-1].meta_lis_keys.append("token")

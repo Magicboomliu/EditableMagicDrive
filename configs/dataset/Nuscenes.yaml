@@ -1,6 +1,6 @@
 dataset_type: NuScenesDatasetM
-dataset_root: /data/nuScene
-dataset_process_root: /data/nuscenes_mmdet3d_2/  # with visibility
+dataset_root: /data/nuScenes/nuscenes
+dataset_process_root: /data/zliu/nuScenes/mmdet3d_backup_2/  # with visibility
 dataset_cache_file_tag: null
 dataset_cache_file:
   - null  # for train_pipeline
@@ -85,7 +85,7 @@ map_classes:
   - road_block
 
 input_modality:
-  use_lidar: true
+  use_lidar: false
   use_camera: true
   use_radar: false
   use_map: false
@@ -95,12 +95,6 @@ train_pipeline:
   -
     type: LoadMultiViewImageFromFiles
     to_float32: true
-  -
-    type: LoadPointsFromFile
-    coord_type: "LIDAR"
-    load_dim: 5
-    use_dim: 5
-
   -
     type: LoadAnnotations3D
     with_bbox_3d: true
@@ -159,7 +153,7 @@ train_pipeline:
     type: Collect3D
     keys:  # keep as origin
       - img
-      - points
+      # - points
       - gt_bboxes_3d
       - gt_labels_3d
       - gt_masks_bev

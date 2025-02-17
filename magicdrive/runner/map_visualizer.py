@@ -143,6 +143,11 @@ def classes_to_np(classes):
 def visualize_map(
     cfg, map: Union[np.ndarray, torch.Tensor], target_size=400
 ) -> np.ndarray:
+    '''
+    visualize_map 主要用于 可视化 BEV（Bird’s Eye View）地图，
+    它将 静态（static）和动态（dynamic）
+    语义层 渲染到图像中，并添加图例（legend），最终返回可视化的 RGB 图像。
+    '''
     """visualize bev map
 
     Args:
@@ -155,11 +160,11 @@ def visualize_map(
 
     if isinstance(map, torch.Tensor):
         map = map.cpu().numpy()
-    map = map.transpose(1, 2, 0)  # channel last
+    map = map.transpose(1, 2, 0)  # [H,W,8]
 
     # we assume map has static + dynamic layers, classes can be None
-    static_semantic = classes_to_np(cfg.dataset.map_classes)
-    dynamic_semantic = classes_to_np(cfg.dataset.object_classes)
+    static_semantic = classes_to_np(cfg.dataset.map_classes) # specifc class: in bev, background
+    dynamic_semantic = classes_to_np(cfg.dataset.object_classes) # dynamic class, foreground, like "car"
 
     empty = np.uint8(COLORS["nothing"])[None, None]
     semantic_used = set()

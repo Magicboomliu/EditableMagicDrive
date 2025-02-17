@@ -20,12 +20,34 @@ class ListSetWrapper(torch.utils.data.DataLoader):
 
 class FolderSetWrapper(torch.utils.data.DataLoader):
     def __init__(self, folder) -> None:
-        self.dataset = glob(os.path.join(folder, "*.pth"))
+        self.dataset = glob(os.path.join(folder, "*.pth")) # # 读取所有 .pth 文件路径
 
     def __getitem__(self, idx):
+        '''
+                {
+            'img': preprocessed image, (6, 3, 224, 400),
+            'gt_bboxes_3d': bbox coordinates, (N, 9), only 0:7 are used in this project
+            'gt_labels_3d': bbox labels, (N),
+            'gt_masks_bev': bev map, (8, 200, 200),
+            'camera_intrinsics': (6, 4, 4) for 6 cameras,
+            'lidar2camera': (6, 4, 4) for 6 cameras,
+            'img_aug_matrix': matrix for image preprocessing, (6, 4, 4),
+            'metas': {
+                'timeofday': [useless],
+                'location' as in nuScenes,
+                'description': as in nuScenes,
+                'token': as in nuScenes
+            }
+        }
+        
+
+
+        '''
         data = torch.load(self.dataset[idx])
         mmdet3d_format = {}
         mmdet3d_format['gt_masks_bev'] = data['gt_masks_bev']
+        
+        
         # fmt: off
         # in DataContainer
         mmdet3d_format['img'] = DataContainer(data['img'])
@@ -50,6 +72,8 @@ class FolderSetWrapper(torch.utils.data.DataLoader):
             torch.bmm(data['camera_intrinsics'], data['lidar2camera'])
         )
         # fmt: on
+
+        # finally return a dict for training the models
         return mmdet3d_format
 
     def __len__(self):

@@ -6,6 +6,8 @@ defaults:
   - _self_  # make sure override
 
 task_id: 224x400
+
+use_lidar: false
 runner:
   num_train_epochs: 350
   validation_show_box: true

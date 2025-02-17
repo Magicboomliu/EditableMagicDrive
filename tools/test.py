@@ -23,7 +23,7 @@ from magicdrive.misc.test_utils import (
     prepare_all, run_one_batch
 )
 
-transparent_bg = True
+transparent_bg = False
 target_map_size = 400
 # target_map_size = 800
 
@@ -35,6 +35,7 @@ def output_func(x): return concat_6_views(x)
 
 @hydra.main(version_base=None, config_path="../configs",
             config_name="test_config")
+
 def main(cfg: DictConfig):
     if cfg.debug:
         import debugpy
@@ -42,9 +43,8 @@ def main(cfg: DictConfig):
         print("Waiting for debugger attach")
         debugpy.wait_for_client()
         print('Attached, continue...')
+    
 
-    print("loading all the files")
-    quit()
     output_dir = to_absolute_path(cfg.resume_from_checkpoint)
     original_overrides = OmegaConf.load(
         os.path.join(output_dir, "hydra/overrides.yaml"))
@@ -61,6 +61,9 @@ def main(cfg: DictConfig):
     #### setup everything ####
     pipe, val_dataloader, weight_dtype = prepare_all(cfg)
     OmegaConf.save(config=cfg, f=os.path.join(cfg.log_root, "run_config.yaml"))
+
+    logging.info("Loading the Pretrained Models and Build the Pipeline Successfully!")
+
 
     #### start ####
     total_num = 0

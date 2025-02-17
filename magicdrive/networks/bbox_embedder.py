@@ -162,21 +162,27 @@ class ContinuousBBoxWithTextEmbedding(nn.Module):
         Return:
             size B x N x emb_dim=768
         """
+        # initial bboxes shape is [batch_size*6,N_of_bbox,8,3]
         (B, N) = classes.shape
+        
+        # [batch_size*6*N_of_bbox,8,3]
         bboxes = rearrange(bboxes, 'b n ... -> (b n) ...')
 
         if masks is None:
             masks = torch.ones(len(bboxes))
         else:
             masks = masks.flatten()
+        # [batch_size*6*N_of_bbox,1]
         masks = masks.unsqueeze(-1).type_as(self.null_pos_feature)
+
 
         # box
         if self.minmax_normalize:
             bboxes = normalizer(self.mode, bboxes)
-        pos_emb = self.fourier_embedder(bboxes)
+        pos_emb = self.fourier_embedder(bboxes) # [batch_size*6*N_of_bbox,8,27]
         pos_emb = pos_emb.reshape(
             pos_emb.shape[0], -1).type_as(self.null_pos_feature)
+        
         pos_emb = pos_emb * masks + self.null_pos_feature[None] * (1 - masks)
 
         # class

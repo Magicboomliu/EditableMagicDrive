@@ -12,16 +12,13 @@ from diffusers.configuration_utils import register_to_config, ConfigMixin
 from diffusers.models.attention_processor import AttentionProcessor, AttnProcessor
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
-
 from diffusers.models.unet_2d_blocks import (
     CrossAttnDownBlock2D,
     DownBlock2D,
     UNetMidBlock2DCrossAttn,
     get_down_block,
 )
-
 from diffusers.models.unet_2d_condition import UNet2DConditionModel
-
 from diffusers.models.controlnet import zero_module
 
 from .embedder import get_embedder
@@ -29,7 +26,18 @@ from .output_cls import BEVControlNetOutput
 from .map_embedder import BEVControlNetConditioningEmbedding
 from ..misc.common import load_module
 
+'''
+这个 BEVControlNetModel 代码实现了一个 
+多视角 BEV（Bird’s Eye View）ControlNet，
+它基于 ControlNet 的 U-Net 结构，
+同时引入了 多相机特征融合
+Multiview Feature Fusion
+用于提升 BEV 感知能力。
 
+'''
+
+
+# BEV ConrtolNet Model
 class BEVControlNetModel(ModelMixin, ConfigMixin):
     _supports_gradient_checkpointing = True
 
@@ -711,11 +719,10 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
         self,
         sample: torch.FloatTensor,
         timestep: Union[torch.Tensor, float, int],
-        camera_param: torch.Tensor,  # BEV
-        bboxes_3d_data: Dict[str, Any],  # BEV
-        lidars_3d_data: Dict[str,Any],
+        camera_param: torch.Tensor,  # Camera Info: Intrinsics/Extrins
+        bboxes_3d_data: Dict[str, Any],  # 3D Bounding Box
         encoder_hidden_states: torch.Tensor,
-        controlnet_cond: torch.FloatTensor,
+        controlnet_cond: torch.FloatTensor, # This is a BEV
         encoder_hidden_states_uncond: torch.Tensor = None,  # BEV
         conditioning_scale: float = 1.0,
         class_labels: Optional[torch.Tensor] = None,
@@ -726,12 +733,10 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
         return_dict: bool = True,
         **kwargs,
     ) -> Union[BEVControlNetOutput, Tuple]:
-        
-        # dict_keys(['bboxes', 'classes', 'masks'])
-        # dict_keys(['lidars', 'masks'])
-        
         # check channel order
-        channel_order = self.config.controlnet_conditioning_channel_order # rgb        
+        # default channel order is the RGB
+        channel_order = self.config.controlnet_conditioning_channel_order
+
         if channel_order == "rgb":
             # in rgb order by default
             ...
@@ -742,27 +747,21 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
                 f"unknown `controlnet_conditioning_channel_order`: {channel_order}"
             )
 
-        # prepare attention_mask
-
-        # attention mask defualt is the None        
+        # prepare attention_mask: defulat attention mask is NOne
         if attention_mask is not None:
             attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
             attention_mask = attention_mask.unsqueeze(1)
 
         # 0. camera
-        N_cam = camera_param.shape[1] # six
-        camera_emb = self._embed_camera(camera_param) # embedding the cameras #[Batch_Size, Num_of_Cameras, 189]
+        N_cam = camera_param.shape[1]
+        # encode the camera information into camera embeddings
+        camera_emb = self._embed_camera(camera_param) # [2B,6,189]
 
-        # encoder_hidden_states # torch.Size([3, 33, 768])
-        
+        # Fusion the prompt and the camera_emb.
         # (B, N_cam, max_len + 1, dim=768)
         encoder_hidden_states_with_cam = self.add_cam_states(
             encoder_hidden_states, camera_emb
         )
-        
-        # print(encoder_hidden_states_with_cam.shape)
-        # quit()
-        
         # we may drop the condition during training, but not drop controlnet
         if (self.drop_cond_ratio > 0.0 and self.training):
             if encoder_hidden_states_uncond is not None:
@@ -773,22 +772,17 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
         else:
             uncond_mask = None
 
-        '''3D Bounding Embeddings '''
+        # bounding boxing embedding.
+        
         # 0.5. bbox embeddings
         # bboxes data should follow the format of (B, N_cam or 1, max_len, ...)
         # for each view
         if bboxes_3d_data is not None:
-            
             bbox_embedder_kwargs = {}
-            # bboxes_3d_data 存储 3D 目标框数据（例如 bboxes, masks, labels）
             for k, v in bboxes_3d_data.items():
                 bbox_embedder_kwargs[k] = v.clone()
-            
-            # random dropout 如果目标框丢弃了，对应的相机信息也要丢弃。
             if self.drop_cam_with_box and uncond_mask is not None:
-                _, n_box = bboxes_3d_data["bboxes"].shape[:2] #[B,6,N,8,3]
-                
-                # shared bounding boxes
+                _, n_box = bboxes_3d_data["bboxes"].shape[:2]
                 if n_box != N_cam:
                     assert n_box == 1, "either N_cam or 1."
                     for k in bboxes_3d_data.keys():
@@ -796,21 +790,14 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
                             bbox_embedder_kwargs[k], 'b n ... -> (b n) ...')
                         new_v = repeat(ori_v, 'b ... -> b n ...', n=N_cam)
                         bbox_embedder_kwargs[k] = new_v
-                
                 # here we set mask for dropped boxes to all zero
                 masks = bbox_embedder_kwargs['masks']
-                # uncond_mask > 0 的部分表示需要被去除的目标框。
                 masks[uncond_mask > 0] = 0
-                
             # original flow
-            b_box, n_box = bbox_embedder_kwargs["bboxes"].shape[:2] #3, 6
-   
+            b_box, n_box = bbox_embedder_kwargs["bboxes"].shape[:2]
             for k in bboxes_3d_data.keys():
                 bbox_embedder_kwargs[k] = rearrange(
                     bbox_embedder_kwargs[k], 'b n ... -> (b n) ...')
-            
-            # bbox embeddinger
-            
             bbox_emb = self.bbox_embedder(**bbox_embedder_kwargs)
             if n_box != N_cam:
                 # n_box should be 1: all views share the same set of bboxes, we repeat
@@ -818,17 +805,9 @@ class BEVControlNetModel(ModelMixin, ConfigMixin):
             else:
                 # each view already has its set of bboxes
                 bbox_emb = rearrange(bbox_emb, '(b n) ... -> b n ...', n=N_cam)
-            
-            # 3D Bounding Boxes Embeddings
-            
-            # print(bbox_emb.shape) #[Batch_Size, NUM_of_Cameras,NUM_OF_MAX_BOUNDING_BOX, DIMENSION]
-        
-            # print(encoder_hidden_states_with_cam.shape) #[Batch_Size,NUM_OF_CAMERAS,34,768]
-            
             encoder_hidden_states_with_cam = torch.cat([
                 encoder_hidden_states_with_cam, bbox_emb
-            ], dim=2) # [Batch_Size,NUMS_OF_CAMERRAS,dimensions, 768]
-
+            ], dim=2)
 
         # 1. time
         timesteps = timestep

@@ -21,6 +21,29 @@ from ..misc.common import load_module, convert_outputs_to_fp16, move_to
 from .base_runner import BaseRunner
 from .utils import smart_param_count
 
+'''
+这个 MultiviewRunner 继承自 BaseRunner，主要用于 多视角控制网络（ControlNet）
+ 在扩散模型（Diffusion Model）中的训练。
+核心目标是训练 ControlNet 让 UNet 生成合理的视角图像，整个 Runner 负责：
+
+(1) 初始化模型：加载 CLIP、VAE、UNet、ControlNet、调度器（Scheduler）。
+
+(2)设置优化器和学习率调度：使用 AdamW 或 bitsandbytes（8-bit Adam）。
+
+(3) 将模型移动到合适的设备（GPU/AMP）：支持 fp16/bf16 混合精度训练。
+
+(4)训练：
+    - 编码文本提示
+    - 编码 VAE 隐空间
+    - 采样噪声，并在 UNet 上执行去噪
+    - 计算 MSE 损失，反向传播更新 ControlNet
+
+(5) 保存模型
+
+'''
+
+
+'''ControlNet 不能直接使用 Accelerator 进行 gradient accumulation（梯度累积），所以定义了一个封装 UNet 和 ControlNet 的 ModelMixin。'''
 
 class ControlnetUnetWrapper(ModelMixin):
     """As stated in https://github.com/huggingface/accelerate/issues/668, we
@@ -93,22 +116,25 @@ class ControlnetUnetWrapper(ModelMixin):
 
 
 class MultiviewRunner(BaseRunner):
-    def __init__(self, cfg, accelerator, train_set, val_set) -> None:
-        super().__init__(cfg, accelerator, train_set, val_set)
+    def __init__(self, cfg, accelerator, train_set, val_set, use_lidar=False) -> None:
+        super().__init__(cfg, accelerator, train_set, val_set,use_lidar=use_lidar)
 
+    # First Place Invoked
     def _init_fixed_models(self, cfg):
         # fmt: off
+        # loade the tokenizer/text_encoder/vae and the schedualr
         self.tokenizer = CLIPTokenizer.from_pretrained(cfg.model.pretrained_model_name_or_path, subfolder="tokenizer")
         self.text_encoder = CLIPTextModel.from_pretrained(cfg.model.pretrained_model_name_or_path, subfolder="text_encoder")
         self.vae = AutoencoderKL.from_pretrained(cfg.model.pretrained_model_name_or_path, subfolder="vae")
         self.noise_scheduler = DDPMScheduler.from_pretrained(cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
+
         # fmt: on
 
+    # Second Place Invoked
     def _init_trainable_models(self, cfg):
-        # fmt: off
+        # fmt: off:
         unet = UNet2DConditionModel.from_pretrained(cfg.model.pretrained_model_name_or_path, subfolder="unet")
         # fmt: on
-
         model_cls = load_module(cfg.model.unet_module)
         unet_param = OmegaConf.to_container(self.cfg.model.unet, resolve=True)
         self.unet = model_cls.from_unet_2d_condition(unet, **unet_param)
@@ -118,12 +144,16 @@ class MultiviewRunner(BaseRunner):
             self.cfg.model.controlnet, resolve=True)
         self.controlnet = model_cls.from_unet(unet, **controlnet_param)
 
+    # Third Place Invoked
     def _set_model_trainable_state(self, train=True):
         # set trainable status
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.controlnet.train(train)
-        self.unet.requires_grad_(False)
+        self.vae.requires_grad_(False) # VAE is not updated 
+        self.text_encoder.requires_grad_(False) # Text Encoder is not updated
+        self.controlnet.train(train)     # Controlnet is updated
+        self.unet.requires_grad_(False)   # Unet(Most of the parametes) is not updatdea
+        
+        # seek for trainable parameters in the unet, which is the `BasicMultiViewTransformerBlock`
+        # I guesse
         for name, mod in self.unet.trainable_module.items():
             logging.debug(
                 f"[MultiviewRunner] set {name} to requires_grad = True")
@@ -242,36 +272,33 @@ class MultiviewRunner(BaseRunner):
         logging.info(f"Save your model to: {root}")
 
     def _train_one_stop(self, batch):
-        
-        # activate the controlent into train mode.
 
+        # activate the controlent
         self.controlnet_unet.train()
         with self.accelerator.accumulate(self.controlnet_unet):
-            N_cam = batch["pixel_values"].shape[1] # N_cam is six
+            N_cam = batch["pixel_values"].shape[1]
 
-            # combine the image views with the batch size
             # Convert images to latent space
             latents = self.vae.encode(
                 rearrange(batch["pixel_values"], "b n c h w -> (b n) c h w").to(
                     dtype=self.weight_dtype
                 )
-            ).latent_dist.sample() #[3B,4,H,W]
-
+            ).latent_dist.sample()
             latents = latents * self.vae.config.scaling_factor
-            latents = rearrange(latents, "(b n) c h w -> b n c h w", n=N_cam) # [B,6,4,H//8,W//8]
+            latents = rearrange(latents, "(b n) c h w -> b n c h w", n=N_cam)
+
             # embed camera params, in (B, 6, 3, 7), out (B, 6, 189)
             # camera_emb = self._embed_camera(batch["camera_param"])
-            camera_param = batch["camera_param"].to(self.weight_dtype) #[B,6,3,7]
+            camera_param = batch["camera_param"].to(self.weight_dtype)
 
             # Sample noise that we'll add to the latents
-            noise = torch.randn_like(latents) # noise  --------> [B,6,4,H//8,W//8]
+            noise = torch.randn_like(latents)
             # make sure we use same noise for different views, only take the
             # first
-            
             if self.cfg.model.train_with_same_noise:
                 noise = repeat(noise[:, 0], "b ... -> b r ...", r=N_cam)
-            bsz = latents.shape[0]  # batch size
-            
+
+            bsz = latents.shape[0]
             # Sample a random timestep for each image
             if self.cfg.model.train_with_same_t:
                 timesteps = torch.randint(
@@ -287,28 +314,26 @@ class MultiviewRunner(BaseRunner):
                     (bsz,),
                     device=latents.device,
                 ) for _ in range(N_cam)], dim=1)
-            
-            timesteps = timesteps.long() #[B,] sample times batch
+            timesteps = timesteps.long()
+
             # Add noise to the latents according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
-            noisy_latents = self._add_noise(latents, noise, timesteps) # add noise.
+            noisy_latents = self._add_noise(latents, noise, timesteps)
 
             # Get the text embedding for conditioning
-            # get hidden state from pre-trained CLIP
             encoder_hidden_states = self.text_encoder(batch["input_ids"])[0]
             encoder_hidden_states_uncond = self.text_encoder(
                 batch
                 ["uncond_ids"])[0]
 
             controlnet_image = batch["bev_map_with_aux"].to(
-                dtype=self.weight_dtype) # here the controlnet input 
+                dtype=self.weight_dtype)
 
             model_pred = self.controlnet_unet(
                 noisy_latents, timesteps, camera_param, encoder_hidden_states,
                 encoder_hidden_states_uncond, controlnet_image,
                 **batch['kwargs'],
             )
-            
 
             # Get the target for loss depending on the prediction type
             if self.noise_scheduler.config.prediction_type == "epsilon":

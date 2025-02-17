@@ -4,18 +4,12 @@ defaults:
 
 # this config only remove object items on map construction
 # map size: (8, 200, 200)
-point_cloud_range: [-50, -50, -5, 50, 50, 3]
 
 dataset:
   train_pipeline:
     -
       type: LoadMultiViewImageFromFiles
       to_float32: true
-    -
-      type: LoadPointsFromFile
-      coord_type: "LIDAR"
-      load_dim: 5
-      use_dim: 5
     -
       type: LoadAnnotations3D
       with_bbox_3d: true
@@ -53,9 +47,9 @@ dataset:
       direction: ${...augment3d.flip_direction}
     # -
     #   type: RandomFlip3D  # random flip the whole lidar space
-    -
-      type: PointsRangeFilter
-      point_cloud_range: ${point_cloud_range}
+    # -
+    #   type: PointsRangeFilter
+    #   point_cloud_range: ${point_cloud_range}
     # -
     #   type: ObjectRangeFilter
     #   point_cloud_range: ${point_cloud_range}
@@ -74,7 +68,7 @@ dataset:
       type: Collect3D
       keys:  # keep as origin
         - img
-        - points
+        # - points
         - gt_bboxes_3d
         - gt_labels_3d
         - gt_masks_bev
@@ -97,12 +91,6 @@ dataset:
     -
       type: LoadMultiViewImageFromFiles
       to_float32: true
-    -
-      type: LoadPointsFromFile
-      coord_type: "LIDAR"
-      load_dim: 5
-      use_dim: 5
-
     -
       type: LoadAnnotations3D
       with_bbox_3d: true
@@ -134,10 +122,9 @@ dataset:
       object_classes: null
       aux_data: null
       cache_file: ${...dataset_cache_file.1}
-    -
-      type: PointsRangeFilter
-      point_cloud_range: ${point_cloud_range}    
-    
+    # -
+    #   type: PointsRangeFilter
+    #   point_cloud_range: ${point_cloud_range}
     - 
       type: ReorderMultiViewImagesM
       order: ${...view_order}
@@ -153,7 +140,7 @@ dataset:
       type: Collect3D
       keys:
         - img
-        - points
+        # - points
         - gt_bboxes_3d
         - gt_labels_3d
         - gt_masks_bev

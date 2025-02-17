@@ -1,0 +1,14 @@
+defaults:
+  - config
+  - _self_
+
+log_root_prefix: ./magicdrive-log/debug/vanilla_version
+
+runner:
+  validation_batch_size: 4
+  validation_index: [10, 20, 30, 40, 50, 100]
+
+resume_on_exists: false
+show_box: true
+
+fix_seed_for_every_generation: False

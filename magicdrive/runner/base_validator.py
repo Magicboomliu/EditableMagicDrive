@@ -22,7 +22,10 @@ from magicdrive.pipeline.pipeline_bev_controlnet import (
     BEVStableDiffusionPipelineOutput,
 )
 from magicdrive.dataset.utils import collate_fn
+from magicdrive.dataset.utils_with_lidar import collate_fn_with_lidar
+
 from magicdrive.networks.unet_addon_rawbox import BEVControlNetModel
+from magicdrive.networks.unet_addon_rawbox_with_LiDAR import BEVControlNetModelWithLiDAR
 
 
 def format_ori_with_gen(ori_img, gen_img_list):
@@ -54,7 +57,7 @@ class BaseValidator:
 
     def validate(
         self,
-        controlnet: BEVControlNetModel,
+        controlnet,
         unet,
         trackers: Tuple[GeneralTracker, ...],
         step, weight_dtype, device
@@ -62,9 +65,7 @@ class BaseValidator:
         logging.info("[BaseValidator] Running validation... ")
         controlnet.eval()  # important !!!
         unet.eval()
-        
-        
-        # build the pipeline
+
         pipeline = self.pipe_cls.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path,
             **self.pipe_param,
@@ -96,15 +97,22 @@ class BaseValidator:
 
         for validation_i in self.cfg.runner.validation_index:
             raw_data = self.val_dataset[validation_i]  # cannot index loader
-            val_input = collate_fn(
-                [raw_data], self.cfg.dataset.template, is_train=False,
-                bbox_mode=self.cfg.model.bbox_mode,
-                bbox_view_shared=self.cfg.model.bbox_view_shared,
-            )
+            if self.cfg.use_lidar:
+                val_input = collate_fn_with_lidar(
+                    [raw_data], self.cfg.dataset.template, is_train=False,
+                    bbox_mode=self.cfg.model.bbox_mode,
+                    bbox_view_shared=self.cfg.model.bbox_view_shared,
+                )
+            else:
+                val_input = collate_fn(
+                    [raw_data], self.cfg.dataset.template, is_train=False,
+                    bbox_mode=self.cfg.model.bbox_mode,
+                    bbox_view_shared=self.cfg.model.bbox_view_shared,
+                )
+
             # camera_emb = self._embed_camera(val_input["camera_param"])
             camera_param = val_input["camera_param"].to(weight_dtype)
-            
-            
+
             # let different prompts have the same random seed
             if self.cfg.seed is None:
                 generator = None

@@ -120,6 +120,11 @@ class UNet2DConditionModelMultiview(UNet2DConditionModel):
     _supports_gradient_checkpointing = True
     _WARN_ONCE = 0
 
+
+    # @register_to_config：
+    # 把 __init__() 里的参数 
+    # 自动存储 到 self.config，便于 保存 & 重新加载模型。
+
     @register_to_config
     def __init__(
         self,
@@ -215,17 +220,28 @@ class UNet2DConditionModelMultiview(UNet2DConditionModel):
             cross_attention_norm=cross_attention_norm,
             addition_embed_type_num_heads=addition_embed_type_num_heads,)
 
+        # default is the "basic"
+        # 控制 跨视角注意力机制 (Multiview Attention) 的类型。
         self.crossview_attn_type = crossview_attn_type
+        # self.img_size is a list, which is [224,400]
         self.img_size = [int(s) for s in img_size] \
             if img_size is not None else None
+        # 用于存储 新加入的 Transformer 模块。
         self._new_module = {}
+        # 在 PyTorch 中，self.named_modules() 返回一个包含当前模型所有子模块的迭代器，
+        # 每个元素是 (name, module)，其中：
         for name, mod in list(self.named_modules()):
             if isinstance(mod, BasicTransformerBlock):
+                # 遍历 所有模块，如果是 BasicTransformerBlock，
+                # 则替换为 BasicMultiviewTransformerBlock。
                 if crossview_attn_type == "basic":
+                    # for each specic views, get its neighbours
+                    # {'0': [5, 1], '1': [0, 2], '2': [1, 3], 
+                    # '3': [2, 4], '4': [3, 5], '5': [4, 0]}
                     _set_module(self, name, BasicMultiviewTransformerBlock(
                         **mod._args,
                         neighboring_view_pair=neighboring_view_pair,
-                        neighboring_attn_type=neighboring_attn_type,
+                        neighboring_attn_type=neighboring_attn_type, # default is "add"
                         zero_module_type=zero_module_type,
                     ))
                 else:
@@ -233,6 +249,11 @@ class UNet2DConditionModelMultiview(UNet2DConditionModel):
                 for k, v in _get_module(self, name).new_module.items():
                     self._new_module[f"{name}.{k}"] = v
         self.trainable_state = trainable_state
+        # 在 UNet2DConditionModelMultiview 代码中，
+        # trainable_state 用于控制哪些模块是可训练的。
+        # 它的主要作用是 让用户选择只训练新添加的模块，还是训练整个模型。
+        # only new: only training the new Blocks, which is the 
+        # " BasicMultiviewTransformerBlock"
 
     @property
     def trainable_module(self) -> Dict[str, nn.Module]:
@@ -250,7 +271,8 @@ class UNet2DConditionModelMultiview(UNet2DConditionModel):
             for param in mod.parameters():
                 params.append(param)
         return params
-
+    
+    # 只训练trainable的部分
     def train(self, mode=True):
         if not isinstance(mode, bool):
             raise ValueError("training mode is expected to be boolean")
@@ -291,6 +313,9 @@ class UNet2DConditionModelMultiview(UNet2DConditionModel):
                               f"[{module.__class__}] to gradient_checkpointing")
                 module.gradient_checkpointing = True
 
+    # 这个 @classmethod 方法 主要用于 从 UNet2DConditionModel 
+    # 创建一个 Multiview UNet（多视角 U-Net），
+    # 并决定是否加载已有的 UNet 预训练权重。
     @classmethod
     def from_unet_2d_condition(
         cls,

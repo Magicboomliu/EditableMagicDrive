@@ -1,5 +1,5 @@
 name: SDv1.5mv-rawbox
-pretrained_model_name_or_path: /home/SonyInternship/MagicDrive/SD15/SD15/snapshots/451f4fe16113bff5a5d2269ed5ad43b0592e9a14/
+pretrained_model_name_or_path: /home/Zihua/DEV/MagicDrive/pretrained/stable-diffusion-v1-5/snapshots/3deadd3e68b8422c339f30d1bef5456dc8498d4e
 bbox_mode: 'all-xyz'
 bbox_view_shared: false
 crossview_attn_type: basic

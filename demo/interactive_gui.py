@@ -267,7 +267,7 @@ if __name__ == "__main__":
                 e_data = editing_data[box_id]
             else:
                 e_data = [0, 0, 0, 0, 0, 0, 0]
-            return *e_data, *rendered_annotation
+            return e_data, rendered_annotation
 
         # reset editing information for the selected box
         @rst_anno_btn.click(inputs=[box_id, load_gt_image], outputs=[
@@ -278,7 +278,7 @@ if __name__ == "__main__":
                 editing_data.pop(box_id)
             rendered_annotation = edit_and_show(idx=box_id, with_bg=with_bg)
             e_data = [0, 0, 0, 0, 0, 0, 0]
-            return *e_data, *rendered_annotation
+            return e_data, rendered_annotation
 
         # show annotations button
         @show_anno_btn.click(inputs=[box_id, load_gt_image],

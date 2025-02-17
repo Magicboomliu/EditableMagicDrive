@@ -14,7 +14,6 @@ from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
 from diffusers.schedulers.scheduling_utils import KarrasDiffusionSchedulers
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
-
 from ..misc.common import move_to
 
 
@@ -61,6 +60,10 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             requires_safety_checker,
         )
         assert safety_checker == None, "Please do not use safety_checker."
+        # using a VAE to Encode the Image? 
+        # What does this ControlNet Used for?
+        # default vae scale factor is 1/8, which is default downsample rate
+
         self.control_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor,
             do_resize=False,
@@ -68,6 +71,7 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             do_normalize=False,
         )
 
+    # convert the numpy array into images by list ipeartions
     def numpy_to_pil_double(self, images):
         """
         Convert a numpy image or a batch of images to a PIL image.
@@ -96,7 +100,8 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             raise RuntimeError("If you fixed the logic for generator, please remove this. Otherwise, please use other sampler.")
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
-
+    
+    # decode the latents
     def decode_latents(self, latents):
         # decode latents with 5-dims
         latents = 1 / self.vae.config.scaling_factor * latents
@@ -250,20 +255,22 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         else:
             batch_size = prompt_embeds.shape[0]
 
+        # here the prompt is the descriptions of the all the batch images
+        # in list
         device = self._execution_device
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
-        do_classifier_free_guidance = guidance_scale > 1.0
-
+        do_classifier_free_guidance = guidance_scale > 1.
+        # default guidance scale is 2, and do the classifier guidance.
         ### BEV, check camera_param ###
         if camera_param is None:
             # use uncond_cam and disable classifier free guidance
             N_cam = 6  # TODO: hard-coded
             camera_param = self.controlnet.uncond_cam_param((batch_size, N_cam))
+            
             do_classifier_free_guidance = False
         ### done ###
-
         # if isinstance(self.controlnet, MultiControlNetModel) and isinstance(controlnet_conditioning_scale, float):
         #     controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(self.controlnet.nets)
 
@@ -278,10 +285,16 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
         )  # (2 * b, 77 + 1, 768)
-
+    
         # 4. Prepare image
         # NOTE: if image is not tensor, there will be several process.
         assert not self.control_image_processor.config.do_normalize, "Your controlnet should not normalize the control image."
+        # controlnet images input image is not normaliaed
+        
+        # 将输入图像处理为ControlNet所需的格式, here the image is refered
+        # to the BEV images.
+        # which shape is [B,8,200,200]
+        # image is just copy for conditional and unconditional
         image = self.prepare_image(
             image=image,
             width=width,
@@ -293,18 +306,21 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             do_classifier_free_guidance=do_classifier_free_guidance,
             guess_mode=guess_mode,
         )  # (2 * b, c_26, 200, 200)
+
         if use_zero_map_as_unconditional and do_classifier_free_guidance:
             # uncond in the front, cond in the tail
             _images = list(torch.chunk(image, 2))
             _images[0] = torch.zeros_like(_images[0])
             image = torch.cat(_images)
 
-        # 5. Prepare timesteps
+        # 5. Prepare timesteps: default inference times is 20.
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
         # 6. Prepare latent variables
+        # here the in_channels is still the 4?
         num_channels_latents = self.unet.config.in_channels
+        # noise for batch single view.
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -315,8 +331,6 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
             generator,
             latents,  # will use if not None, otherwise will generate
         )  # (b, c, h/8, w/8) -> (bs, 4, 28, 50)
-        
-        # consider the uncond situation
 
         # 7. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -325,13 +339,12 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
         assert camera_param.shape[0] == batch_size, \
             f"Except {batch_size} camera params, but you have bs={len(camera_param)}"
         N_cam = camera_param.shape[1]
+        # 6 views for latents,
         latents = torch.stack([latents] * N_cam, dim=1)  # bs, 6, 4, 28, 50
         # prompt_embeds, no need for b, len, 768
         # image, no need for b, c, 200, 200
         camera_param = camera_param.to(self.device)
-        
 
-        
         if do_classifier_free_guidance and not guess_mode:
             # uncond in the front, cond in the tail
             _images = list(torch.chunk(image, 2))
@@ -350,6 +363,7 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
 
         # 8. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
@@ -357,12 +371,13 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
                 latent_model_input = (
                     torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 )
+                # add noise
                 latent_model_input = self.scheduler.scale_model_input(
                     latent_model_input, t
                 )
-
                 # controlnet(s) inference
                 controlnet_t = t.unsqueeze(0)
+
                 # guess_mode & classifier_free_guidance -> only guidance use controlnet
                 # not guess_mode & classifier_free_guidance -> all use controlnet
                 # guess_mode -> normal input, take effect in controlnet
@@ -376,17 +391,23 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
                 controlnet_t = controlnet_t.repeat(len(controlnet_latent_model_input))
 
                 # fmt: off
+                # the input of the controlnet is the:
+                # (1) Camera Pose,[2B,6,3,7]
+                # (2) Latent Models: Copy from Latent: noise image
+                # (3) BEV Images
+                # (4) 3D Bounding Boxes.
+
                 down_block_res_samples, mid_block_res_sample, \
                 encoder_hidden_states_with_cam = self.controlnet(
                     controlnet_latent_model_input,
                     controlnet_t,
                     camera_param,  # for BEV
                     encoder_hidden_states=controlnet_prompt_embeds,
-                    controlnet_cond=image,
-                    conditioning_scale=controlnet_conditioning_scale,
+                    controlnet_cond=image, # here the image is the BEV map
+                    conditioning_scale=controlnet_conditioning_scale, # scaling is what?
                     guess_mode=guess_mode,
                     return_dict=False,
-                    **bev_controlnet_kwargs, # for BEV
+                    **bev_controlnet_kwargs, # for BEV, here is a dict contains 'bboxes_3d_data'
                 )
                 # fmt: on
 
@@ -414,6 +435,10 @@ class StableDiffusionBEVControlNetPipeline(StableDiffusionControlNetPipeline):
                 latent_model_input = rearrange(
                     latent_model_input, 'b n ... -> (b n) ...')
                 latents = rearrange(latents, 'b n ... -> (b n) ...')
+
+                # 扩散去噪过程中的状态变量，存储当前时间步的 latent 表示。
+                # latent_model_input	U-Net 计算输入，是 latents 经过 classifier-free guidance 处理后的版本。
+
 
                 # predict the noise residual: 2bxN, 4, 28, 50
                 additional_param = {}

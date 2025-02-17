@@ -1,12 +1,12 @@
 defaults:
   - _self_
   - model: SDv1.5mv_rawbox
-  - dataset: Nuscenes_cache
+  - dataset: Nuscenes_cache_small
   - accelerator: default
   - runner: default
 
 task_id: "0.0.0"
-log_root_prefix: ./magicdrive-log
+log_root_prefix: ./debug_pretrained_and_logs
 projname: ${model.name}
 hydra:
   run:
@@ -15,7 +15,7 @@ hydra:
 
 try_run: false
 debug: false
-log_root: ???
+log_root: ./debug_pretrained_and_logs
 init_method: env://
 seed: 42
 fix_seed_within_batch: false
